@@ -5,7 +5,7 @@ import { AppError } from '../../shared/errors/AppError';
 import { sendSuccess, sendError } from '../../shared/helpers/response';
 import { authenticate, AuthRequest } from '../../middleware/authenticate';
 import { requireRole } from '../../middleware/authorize';
-import { CreditService } from '../credits/credits.service.stub';
+import { CreditService } from '../credits/credits.service';
 
 export const attemptsRouter = Router();
 
@@ -55,8 +55,13 @@ attemptsRouter.post(
         throw new AppError(409, 'You already have an active attempt for this assessment', 'ATTEMPT_IN_PROGRESS');
       }
 
-      // Step 1: Consume credits BEFORE creating attempt (M4 stub for now)
-      const creditCost = 1;
+      // Step 1: Consume credits BEFORE creating attempt.
+      // Cost comes from the active global credit policy (consume_amount). Defaults to 10.
+      const { rows: policyRows } = await db.query(
+        `SELECT consume_amount FROM credit.credit_policies
+         WHERE scope_type = 'GLOBAL' AND is_active = TRUE ORDER BY created_at ASC LIMIT 1`
+      );
+      const creditCost = policyRows.length > 0 ? Number(policyRows[0].consume_amount) : 10;
       const { newBalance } = await CreditService.consume(
         student_id,
         creditCost,

@@ -2,17 +2,82 @@
 
 ## Current Status
 
-- **Current phase:** M1 Integration Fixes COMPLETE (2026-09-26) — B-TURNS-NO-AUTH, B-RESPONSE-SPLIT, B-QBANK-NAME, B-REDIS-NEW all fixed
-- **Overall status:** M2 COMPLETE. M1 integration fixes implemented in shared backend. TypeScript PASS. M3 and M4 still blocked.
-- **Last completed task:** M1 audio interview integration (2026-09-26) — interview.routes.ts + sessionContextService.ts + migration 016
-- **Current task:** Awaiting Supabase project confirmation + user approval to run migrations
-- **Next task:** Create backend/.env → run migrations 001–015 + 016 + 031–043 on Supabase → smoke test
-- **TypeScript/build status:** PASS — `tsc --noEmit` exits 0, no errors
-- **Test status:** NOT WRITTEN YET
-- **Database migration status:** SQL files written (001–015, 016, 031–043), statically verified — NOT YET EXECUTED against live database. 016 is NEW and required before audio turns work.
+- **Current phase:** M4 implementation + API catalog complete (2026-09-26)
+- **Overall status:** M2 COMPLETE. M4 COMPLETE (CreditService, EligibilityService, all routes). API_FUNCTION_CATALOG.md created. Tests written. TypeScript PASS.
+- **Last completed task:** M4 implementation audit, credit cost fix, API catalog, 36 unit tests (2026-09-26)
+- **Current task:** IDLE — awaiting next instruction
+- **Next task:** Pending user direction (M3 integration, smoke testing, PR preparation)
+- **TypeScript/build status:** PASS — `tsc --noEmit` exits 0, no errors (test files excluded from main tsconfig)
+- **Test status:** 36 tests PASS — scoring formulas, CreditService (consume/earn/createAccount/idempotency), EligibilityService rules, M4 event handlers
+- **Database migration status:** 52/52 migrations applied to Supabase (per previous session). No new migrations in this session.
 - **Live database:** SUPABASE PROJECT BEING CREATED — do not connect or run migrations until explicitly instructed
 - **M3 integration:** ON HOLD — M3 has zero implementation as of latest audit (commit 214eb0ef)
 - **Redis:** OPTIONAL — graceful degradation implemented; provide REDIS_URL in .env for turn caching
+
+---
+
+## Work Log — 2026-09-26 (Session Recovery + M4 Audit + API Catalog + Tests)
+
+### Task
+Recover from expired Claude session. Audit M4 implementation state. Fix discovered bugs. Create `docs/API_FUNCTION_CATALOG.md`. Write unit tests. Verify TypeScript.
+
+### Recovery Findings
+- **M2:** Fully implemented and unchanged. All previous fixes (B1–B6, B-TURNS-NO-AUTH, B-RESPONSE-SPLIT, B-QBANK-NAME, B-REDIS-NEW) in place.
+- **M4:** Already substantially implemented in the previous session. The following were found to exist and be correct:
+  - `credits.service.ts` — real CreditService with `consume()`, `earn()`, `createAccount()`, all with idempotency keys and `SELECT FOR UPDATE`
+  - `event-handlers.ts` — `USER_REGISTERED` and `ATTEMPT_COMPLETED` handlers registered in `index.ts`
+  - `credits.routes.ts`, `credit-policies.routes.ts`, `checklist.routes.ts`, `verifications.routes.ts`, `placement.routes.ts` — all implemented
+  - `eligibility.service.ts` — `EligibilityService.recalculate()` implemented with all three eligibility criteria
+  - All M4 routes mounted in `routes/index.ts`
+  - Migrations 091–099, 105–106, 115–116 all present
+- **Schema verification:** CreditService column references verified against actual migrations — all match.
+- **credits.service.stub.ts:** Already a re-export shim pointing to the real implementation.
+
+### Bugs Fixed
+
+**BUG: Hardcoded credit cost in `attempts.routes.ts`**
+- Credit cost was `const creditCost = 1` (hardcoded) — should read from global `credit.credit_policies.consume_amount`
+- Fixed: Now queries GLOBAL policy `consume_amount` (defaults to 10 if no policy row exists)
+
+**CLEANUP: Stale stub import in `attempts.routes.ts`**
+- Import was `from '../credits/credits.service.stub'` — changed to `from '../credits/credits.service'` directly
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `docs/API_FUNCTION_CATALOG.md` | Audited API reference — every endpoint classified IMPLEMENTED/STUB/DOCUMENTED-ONLY |
+| `backend/src/__tests__/scoring.test.ts` | 17 tests — score formula unit tests |
+| `backend/src/__tests__/credits.service.test.ts` | 7 tests — CreditService with mocked DB |
+| `backend/src/__tests__/eligibility.test.ts` | 6 tests — EligibilityService rules |
+| `backend/src/__tests__/event-handlers.test.ts` | 6 tests — M4 event handlers |
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `backend/src/modules/attempts/attempts.routes.ts` | Fix credit cost + import |
+| `backend/tsconfig.json` | Exclude `src/__tests__` from main compile (tests use top-level await, incompatible with CommonJS module setting) |
+| `backend/package.json` | Added vitest dev dependency + `test` / `test:watch` scripts |
+| `docs/MODULE_2_DEVELOPMENT_LOG.md` | This update |
+
+### Test Results
+```
+Test Files  4 passed (4)
+Tests       36 passed (36)
+Duration    ~650ms
+```
+
+### TypeScript
+`tsc --noEmit` → **0 errors** (test files excluded via tsconfig `exclude`)
+
+### Known Issues (not fixed this session)
+| ID | Issue | Severity |
+|----|-------|----------|
+| DESIGN-01 | `event-handlers.ts` ATTEMPT_COMPLETED reads `consume_amount` as earn amount. Both default to 10. Functionally correct, semantically misleading. | LOW |
+| M3-BLOCK | `EligibilityService` reads `performance.performance_profiles` — M3 not implemented → `perfScore = 0` → all students fail 60.0 threshold | MEDIUM |
+| PORTAL-STUB | All `/api/portals/*` routes are empty stubs | LOW (not needed for assessment flow) |
+| AUDIT-LOG-STALE | Dev log still mentions "Awaiting Supabase" — migration already complete per previous session | FIXED in this update |
 
 ---
 
