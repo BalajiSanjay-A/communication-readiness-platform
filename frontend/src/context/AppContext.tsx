@@ -140,6 +140,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     liveTranscript: ''
   });
 
+  // ── Hydrate auth state on mount ──────────────────────────────────────────
+  // If a stored token exists, validate it against the backend and restore user state.
+  // This ensures that a page refresh picks up the correct user role/name rather than
+  // relying solely on the cached localStorage auth_user JSON.
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+
+    api.auth.me()
+      .then(data => {
+        const authUser: AuthUser = {
+          id: data.user.id,
+          name: data.user.name,
+          email: data.user.email,
+          role: data.user.role as any,
+          studentId: data.studentId ?? undefined,
+        };
+        setCurrentUser(authUser);
+        setActiveRole(data.user.role as any);
+        setIsAuthenticated(true);
+        localStorage.setItem('auth_user', JSON.stringify(authUser));
+
+        if (data.user.role === 'STUDENT' && data.studentId) {
+          api.student.getProfile(data.studentId)
+            .then(prof => {
+              setStudent(prof);
+              setLatestReport(prof.recentReports?.[0] ?? null);
+            })
+            .catch(() => {}); // Profile fetch failure is non-critical
+        }
+      })
+      .catch(() => {
+        // Token invalid or backend unreachable — clear stale auth state
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+      });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Handle Tab switches when in interview room with proctor audit sync
   useEffect(() => {
     const handleVisibilityChange = async () => {
@@ -643,7 +683,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = () => {
-    api.setToken(null);
+    // Invalidate the JWT on the backend (increments token_version so the token
+    // is rejected by subsequent requests). Fire-and-forget — the token value is
+    // captured synchronously inside apiFetch before we clear localStorage below.
+    api.auth.logout().catch(() => {});
+    // Immediately clear local state so the UI resets without waiting for the network
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_user');
     setCurrentUser(null);

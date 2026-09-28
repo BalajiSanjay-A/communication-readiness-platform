@@ -1,51 +1,97 @@
-import { useRef, useCallback, useEffect } from 'react';
+/**
+ * useQuestionTTS — Browser SpeechSynthesis hook for reading questions aloud.
+ *
+ * Wraps window.speechSynthesis in a stable React hook.
+ * Prefers a network English voice (Google/Samantha/David) over local voices
+ * for better naturalness.
+ *
+ * Usage:
+ *   const { speak, cancel } = useQuestionTTS();
+ *   speak(question.questionText, () => startRecording());
+ */
+import { useCallback, useEffect, useRef } from 'react';
 
-export function useQuestionTTS() {
-  const isSpeakingRef = useRef(false);
+export interface UseQuestionTTSReturn {
+  /** Speak the given text. Cancels any ongoing speech first. */
+  speak: (text: string, onEnd?: () => void) => void;
+  /** Cancel any ongoing speech immediately. */
+  cancel: () => void;
+}
+
+export function useQuestionTTS(): UseQuestionTTSReturn {
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   const speak = useCallback((text: string, onEnd?: () => void) => {
-    if (!text) { onEnd?.(); return; }
-    if (!('speechSynthesis' in window)) { onEnd?.(); return; }
+    if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      onEnd?.();
+      return;
+    }
 
+    // Cancel any ongoing speech before starting a new utterance
     window.speechSynthesis.cancel();
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
 
-    isSpeakingRef.current = true;
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
+    utterance.rate = 0.95; // slightly slower for clarity
     utterance.pitch = 1.0;
+    utterance.volume = 1.0;
 
-    const voices = window.speechSynthesis.getVoices();
-    const naturalVoice = voices.find(v =>
-      v.lang.startsWith('en') &&
-      (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('David'))
-    );
-    if (naturalVoice) utterance.voice = naturalVoice;
+    // Prefer a natural network English voice when available
+    const pickVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      return (
+        voices.find(
+          (v) =>
+            v.lang.startsWith('en') &&
+            (v.name.includes('Natural') ||
+              v.name.includes('Google') ||
+              v.name.includes('Samantha') ||
+              v.name.includes('David'))
+        ) ?? voices.find((v) => v.lang.startsWith('en')) ?? null
+      );
+    };
+
+    const selectedVoice = pickVoice();
+    if (selectedVoice) utterance.voice = selectedVoice;
 
     let ended = false;
     const handleEnd = () => {
       if (ended) return;
       ended = true;
-      isSpeakingRef.current = false;
+      utteranceRef.current = null;
       onEnd?.();
     };
 
-    utterance.onstart = () => { isSpeakingRef.current = true; };
     utterance.onend = handleEnd;
-    utterance.onerror = (e) => { console.warn('[useQuestionTTS] error:', e); handleEnd(); };
+    utterance.onerror = (e) => {
+      console.warn('[TTS] SpeechSynthesis error:', e.error);
+      handleEnd();
+    };
 
-    // Chromium onend bug: safety timer in case onend never fires
+    // Chromium onend reliability workaround: set a safety timeout
     const safetyMs = Math.max(5000, text.length * 90);
-    setTimeout(() => { if (isSpeakingRef.current) handleEnd(); }, safetyMs);
+    const safetyTimer = setTimeout(() => {
+      if (!ended) handleEnd();
+    }, safetyMs);
 
+    // Clear the safety timer if utterance ends naturally
+    const origEnd = utterance.onend;
+    utterance.onend = (e) => {
+      clearTimeout(safetyTimer);
+      if (origEnd) (origEnd as (e: SpeechSynthesisEvent) => void)(e);
+    };
+
+    utteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
   }, []);
 
   const cancel = useCallback(() => {
-    window.speechSynthesis.cancel();
-    isSpeakingRef.current = false;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    utteranceRef.current = null;
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => () => cancel(), [cancel]);
 
   return { speak, cancel };
