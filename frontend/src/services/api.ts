@@ -741,6 +741,72 @@ class ApiClient {
       return PEP_DOMAINS;
     }
   };
+
+  // SESSION TURNS — real backend audio pipeline
+  sessions = {
+    // POST /api/sessions/:id/turns — multipart: audio (WAV) + metadata (JSON string)
+    submitTurn: async (
+      sessionId: string,
+      audioBlob: Blob,
+      metadata: {
+        studentId: string;
+        questionText: string;
+        difficulty: string;
+        turnNumber: number;
+        domain?: string;
+      }
+    ): Promise<{
+      transcript: string;
+      technicalScore: number;
+      communicationScore: number;
+      overallScore: number;
+      feedback: string;
+      strengths: string;
+      weaknesses: string;
+      nextDifficulty: string;
+      audioMetrics: { paceWpm: number; fillerCount: number; fluencyScore: number; clarityScore: number };
+    }> => {
+      const token = this.token || localStorage.getItem('auth_token') || '';
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'response.wav');
+      formData.append('metadata', JSON.stringify({ sessionId, ...metadata }));
+
+      const res = await fetch(`/api/sessions/${sessionId}/turns`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        // No Content-Type — fetch sets it with correct multipart boundary automatically
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Turn submit failed: ${res.status}`);
+      }
+
+      const json = await res.json();
+      return json.data;
+    },
+
+    bankFallback: async (difficulty: 'EASY' | 'MEDIUM' | 'ADVANCED', domain?: string): Promise<{
+      id: string;
+      question_text: string;
+      difficulty: string;
+      category: string;
+      domain: string | null;
+    }> => {
+      const token = this.token || localStorage.getItem('auth_token') || '';
+      const params = new URLSearchParams({ difficulty });
+      if (domain) params.set('domain', domain);
+
+      const res = await fetch(`/api/sessions/bank-fallback?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) throw new Error(`Bank fallback failed: ${res.status}`);
+      const json = await res.json();
+      return json.data;
+    },
+  };
 }
 
 export const api = new ApiClient();

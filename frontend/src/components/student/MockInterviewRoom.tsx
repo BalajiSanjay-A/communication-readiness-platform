@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { VoiceOrb } from './VoiceOrb';
 import { QuestionTurn } from '../../types';
+import { useVoiceCapture } from '../../hooks/useVoiceCapture';
+import { useQuestionTTS } from '../../hooks/useQuestionTTS';
 import { 
   ShieldAlert, 
   Mic, 
@@ -29,11 +31,24 @@ declare global {
 }
 
 export const MockInterviewRoom: React.FC = () => {
-  const { 
+  const {
     student,
-    interviewState, 
-    submitAnswer
+    interviewState,
+    submitAnswer,
+    submitAudioAnswer,
   } = useApp();
+
+  // Audio blob captured by VAD — used for Whisper STT + waveform analysis path
+  const pendingAudioRef = useRef<Blob | null>(null);
+
+  const { start: vadStart, stop: vadStop } = useVoiceCapture({
+    onSpeechEnd: (audioBlob: Blob) => {
+      // Store blob; actual submit is triggered by silence detector or manual button
+      pendingAudioRef.current = audioBlob;
+    },
+  });
+
+  const { speak: ttsSpeak, cancel: ttsCancel } = useQuestionTTS();
 
   // State flags for UI display
   const [hasSessionStarted, setHasSessionStarted] = useState(false);
@@ -78,16 +93,15 @@ export const MockInterviewRoom: React.FC = () => {
   // Clean up all resources on unmount
   useEffect(() => {
     return () => {
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      ttsCancel();
       stopRecordingResources();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Stop recognition and mic streams cleanly
+  // Stop recognition, VAD, and mic streams cleanly
   const stopRecordingResources = () => {
     isRecordingRef.current = false;
     setIsRecording(false);
@@ -104,9 +118,7 @@ export const MockInterviewRoom: React.FC = () => {
     setSilenceCountdown(null);
 
     if (recognitionRef.current) {
-      try { 
-        recognitionRef.current.abort(); 
-      } catch {}
+      try { recognitionRef.current.abort(); } catch {}
       recognitionRef.current = null;
     }
 
@@ -121,28 +133,40 @@ export const MockInterviewRoom: React.FC = () => {
     }
 
     if (audioContextRef.current) {
-      try { 
-        audioContextRef.current.close(); 
-      } catch {}
+      try { audioContextRef.current.close(); } catch {}
       audioContextRef.current = null;
     }
+
+    vadStop();
   };
 
-  // Submit Answer to Backend Gateway & FastAPI
+  // Submit: prefer VAD audio blob (Whisper + waveform analysis), fall back to Web Speech text
   const handleExecuteSubmit = async (textToSubmit?: string) => {
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
-
-    // Stop recording and timers
     stopRecordingResources();
 
-    const candidateAnswer = (textToSubmit || latestSpeechRef.current || currentSpeechText).trim();
-    const finalAnswer = candidateAnswer || 
+    const audioBlob = pendingAudioRef.current;
+    pendingAudioRef.current = null;
+
+    const candidateText = (textToSubmit || latestSpeechRef.current || currentSpeechText).trim();
+    const fallbackText = candidateText ||
       "I have implemented scalable architecture solutions using reactive patterns, distributed caching, and transactional consistency.";
 
     try {
-      await submitAnswer(finalAnswer);
+      if (audioBlob) {
+        // Primary path: real audio → Node.js → FastAPI (STT ∥ audio analysis → LLM)
+        await submitAudioAnswer(
+          audioBlob,
+          currentQ.questionText,
+          currentQ.difficulty,
+          interviewState.turnIndex + 1,
+        );
+      } else {
+        // Fallback: Web Speech text → mock/Groq evaluator
+        await submitAnswer(fallbackText);
+      }
     } catch (err) {
       console.error("[MockInterview] Submit error:", err);
     } finally {
@@ -290,75 +314,26 @@ export const MockInterviewRoom: React.FC = () => {
         console.warn("SpeechRec error:", e);
       }
     }
+
+    // Start VAD in parallel — captures audio for Whisper STT path (W7: no COEP/COOP needed)
+    vadStart();
   };
 
-  // Speak AI Question with Natural Speech Synthesis
+  // Speak AI Question — uses useQuestionTTS hook (voice selection, Chrome safety timer handled inside)
   const speakQuestion = (questionText: string) => {
     if (!questionText) return;
-
-    // First stop mic to prevent acoustic echo
     stopRecordingResources();
-
-    if (!('speechSynthesis' in window)) {
-      // Fallback: If browser lacks speech synthesis, jump straight to recording
-      setIsSpeakingQuestion(false);
-      isSpeakingRef.current = false;
-      startRecording();
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-    if (window.speechSynthesis.paused) {
-      window.speechSynthesis.resume();
-    }
 
     isSpeakingRef.current = true;
     setIsSpeakingQuestion(true);
 
-    const utterance = new SpeechSynthesisUtterance(questionText);
-    utterance.rate = 1.0;
-    utterance.pitch = 1.0;
-
-    // Pick a natural English voice if available
-    const voices = window.speechSynthesis.getVoices();
-    const naturalVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('David')));
-    if (naturalVoice) utterance.voice = naturalVoice;
-
-    let hasEnded = false;
-    const handleEnd = () => {
-      if (hasEnded) return;
-      hasEnded = true;
+    ttsSpeak(questionText, () => {
       isSpeakingRef.current = false;
       setIsSpeakingQuestion(false);
-
-      // AUTOMATIC HANDS-FREE TRANSITION: Question finished -> open mic immediately!
       if (autoModeRef.current) {
-        setTimeout(() => {
-          startRecording();
-        }, 300);
+        setTimeout(() => startRecording(), 300);
       }
-    };
-
-    utterance.onstart = () => {
-      isSpeakingRef.current = true;
-      setIsSpeakingQuestion(true);
-    };
-
-    utterance.onend = handleEnd;
-    utterance.onerror = (e) => {
-      console.warn("SpeechSynthesis error:", e);
-      handleEnd();
-    };
-
-    // Chrome safety timer: Chromium onend bug fallback
-    const safetyTimeout = Math.max(5000, questionText.length * 90);
-    setTimeout(() => {
-      if (isSpeakingRef.current) {
-        handleEnd();
-      }
-    }, safetyTimeout);
-
-    window.speechSynthesis.speak(utterance);
+    });
   };
 
   // Turn Lifecycle: When current question ID changes, speak the new question
@@ -448,8 +423,9 @@ export const MockInterviewRoom: React.FC = () => {
           {/* Speaker Mute/Unmute Toggle */}
           <button
             onClick={() => {
-              if (!isMuted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel();
+              if (!isMuted) {
+                ttsCancel();
+                isSpeakingRef.current = false;
                 setIsSpeakingQuestion(false);
               }
               setIsMuted(!isMuted);

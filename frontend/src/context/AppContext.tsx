@@ -55,6 +55,7 @@ interface AppContextType {
   interviewState: InterviewSessionState;
   startInterview: (type?: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION') => Promise<void>;
   submitAnswer: (answerText: string) => Promise<void>;
+  submitAudioAnswer: (audioBlob: Blob, questionText: string, difficulty: string, turnNumber: number) => Promise<void>;
   endInterview: () => Promise<void>;
   recordTabSwitch: () => Promise<void>;
   latestReport: DiagnosticReport | null;
@@ -274,6 +275,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         liveTranscript: ''
       };
     });
+  };
+
+  const submitAudioAnswer = async (audioBlob: Blob, questionText: string, difficulty: string, turnNumber: number) => {
+    setInterviewState(prev => ({ ...prev, orbState: 'THINKING' }));
+    const sessId = interviewState.sessionId || `ses_${Date.now()}`;
+    try {
+      const data = await api.sessions.submitTurn(sessId, audioBlob, {
+        studentId: student.id || 'stu-21cs1084',
+        questionText,
+        difficulty,
+        turnNumber,
+        domain: student.department || 'CSE',
+      });
+
+      const isCompleted = turnNumber >= 3;
+      if (isCompleted) {
+        const report: DiagnosticReport = {
+          id: `rep_${Date.now().toString().slice(-4)}`,
+          date: new Date().toISOString().split('T')[0],
+          sessionType: interviewState.type,
+          overallScore: data.overallScore,
+          technicalScore: data.technicalScore,
+          communicationScore: data.communicationScore,
+          averageWpm: data.audioMetrics?.paceWpm || 120,
+          totalFillerWords: data.audioMetrics?.fillerCount || 0,
+          fillerWordBreakdown: {},
+          skillBreakdown: [
+            { skill: 'Technical Knowledge', score: data.technicalScore, status: data.technicalScore >= 75 ? 'STRONG' : 'NEEDS_WORK', recommendation: data.feedback },
+            { skill: 'Communication Fluency', score: Math.round(data.audioMetrics?.fluencyScore ?? data.communicationScore), status: 'MODERATE', recommendation: data.strengths },
+            { skill: 'Speech Clarity', score: Math.round(data.audioMetrics?.clarityScore ?? data.communicationScore), status: 'MODERATE', recommendation: data.weaknesses },
+          ],
+          actionableNextSteps: [data.feedback, data.strengths, data.weaknesses].filter(Boolean),
+          tabSwitches: interviewState.tabSwitches,
+          isFlagged: interviewState.isFlagged,
+        };
+        setLatestReport(report);
+        setStudent(prev => ({ ...prev, recentReports: [report, ...prev.recentReports] }));
+        setInterviewState(prev => ({ ...prev, isActive: false, orbState: 'IDLE' }));
+        setActiveView('REPORT_VIEW');
+      } else {
+        const nextQ = {
+          id: `q_${turnNumber + 1}_${Date.now()}`,
+          questionNumber: turnNumber + 1,
+          questionText: 'Please elaborate on the scalability aspects of your previous answer.',
+          difficulty: (data.nextDifficulty || 'MEDIUM') as Difficulty,
+          category: 'Architecture',
+        };
+        setInterviewState(prev => {
+          const updated = [...prev.questions];
+          updated[prev.turnIndex] = {
+            ...updated[prev.turnIndex],
+            studentAnswer: data.transcript,
+            technicalScore: data.technicalScore,
+            communicationScore: data.communicationScore,
+            wpm: data.audioMetrics?.paceWpm || 120,
+            fillerWords: data.audioMetrics?.fillerCount || 0,
+            feedback: data.feedback,
+            strengths: data.strengths,
+            weaknesses: data.weaknesses,
+          };
+          return {
+            ...prev,
+            turnIndex: prev.turnIndex + 1,
+            currentDifficulty: (data.nextDifficulty || 'MEDIUM') as Difficulty,
+            questions: [...updated, nextQ],
+            orbState: 'SPEAKING',
+            liveTranscript: '',
+          };
+        });
+      }
+    } catch (e) {
+      console.warn('[AppContext] Audio submit error, falling back to text:', e);
+      await submitAnswer(questionText);
+    }
   };
 
   const endInterview = async () => {
@@ -601,6 +676,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       interviewState,
       startInterview,
       submitAnswer,
+      submitAudioAnswer,
       endInterview,
       recordTabSwitch,
       latestReport,
