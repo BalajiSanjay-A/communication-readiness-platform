@@ -1,5 +1,10 @@
+import { createHash } from 'crypto';
 import { db } from '../../shared/db/pool';
 import { AppError } from '../../shared/errors/AppError';
+
+function ikey(raw: string): string {
+  return raw.length <= 100 ? raw : createHash('sha256').update(raw).digest('hex').slice(0, 100);
+}
 
 export interface ConsumeResult { newBalance: number; transactionId: string; }
 export interface EarnResult    { newBalance: number; transactionId: string; }
@@ -12,7 +17,7 @@ export class CreditService {
     reason: string,
     referenceId: string
   ): Promise<ConsumeResult> {
-    const idempotencyKey = `consume:${studentId}:${reason}:${referenceId}`;
+    const idempotencyKey = ikey(`consume:${studentId}:${reason}:${referenceId}`);
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -72,7 +77,7 @@ export class CreditService {
     reason: string,
     referenceId: string
   ): Promise<EarnResult> {
-    const idempotencyKey = `earn:${studentId}:${reason}:${referenceId}`;
+    const idempotencyKey = ikey(`earn:${studentId}:${reason}:${referenceId}`);
     const client = await db.connect();
     try {
       await client.query('BEGIN');

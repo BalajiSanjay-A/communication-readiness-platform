@@ -37,7 +37,7 @@ creditsRouter.get(
       const { rows: totals } = await db.query(
         `SELECT
            COALESCE(SUM(amount) FILTER (WHERE transaction_type IN ('EARN', 'INITIAL')), 0) AS total_earned,
-           COALESCE(ABS(SUM(amount)) FILTER (WHERE transaction_type = 'CONSUME'), 0)       AS total_consumed
+           COALESCE(ABS(SUM(amount) FILTER (WHERE transaction_type = 'CONSUME')), 0)       AS total_consumed
          FROM credit.credit_transactions
          WHERE student_id = $1`,
         [studentId]

@@ -184,8 +184,10 @@ sessionsRouter.post(
 );
 
 // GET /api/sessions/:id
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 sessionsRouter.get(
   '/:id',
+  (req, _res, next) => { if (!UUID_RE.test(req.params.id as string)) return next('router'); next(); },
   authenticate,
   requireRole('STUDENT'),
   async (req: AuthRequest, res: Response): Promise<void> => {

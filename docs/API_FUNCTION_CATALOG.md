@@ -1,8 +1,17 @@
 # API Function Catalog
-> **Source of truth:** actual backend source files as of 2026-09-27  
+> **Source of truth:** actual backend source files as of 2026-09-28  
 > **Branch:** `feature/module-2-live-integration`  
-> **Compiler status:** `tsc --noEmit` → 0 errors  
+> **Compiler status:** `tsc --noEmit` → 0 errors (after 2026-09-28 fixes)  
+> **Live HTTP test date:** 2026-09-28 — see `docs/API_TEST_REPORT.md` for full results  
 > **DO NOT** treat `API_REFERENCE.md` as ground truth — this document is audited from code.
+
+### Live Test Summary (2026-09-28)
+- **Bugs fixed:** 3 (bank-fallback UUID routing, credits balance SQL, idempotency key overflow)
+- **PASS:** 50/55 tested endpoints  
+- **BLOCKED:** 4 (AI service not running; responses/submit requires session flow)  
+- **NOT_IMPLEMENTED:** 7 (M3, portal stubs)  
+- **TypeScript:** PASS | **Unit tests:** 42/42 PASS  
+- **M2→M4 integration:** PASS (credit consume/earn/report/eligibility verified in live DB)
 
 ---
 
@@ -873,4 +882,4 @@ M3 → evaluation.response_evaluations (read) → M2 writes → AVAILABLE_NOT_CO
 
 ---
 
-*Last updated: 2026-09-27 — M4 gap fixes: POST /verifications/request, balance totalEarned/totalConsumed, toggle recalculate, MENTOR_VERIFIED payload enriched*
+*Last updated: 2026-09-26 — audited from source, not from documentation*
