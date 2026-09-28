@@ -22,6 +22,7 @@ eventBus.on(Events.USER_REGISTERED, async (payload: UserRegisteredPayload) => {
 // Module 4 — credit accounts, earn-on-attempt, eligibility recalculation
 registerM4EventHandlers();
 
+
 const server = app.listen(env.PORT, () => {
   console.log(`[backend] http://localhost:${env.PORT}  (${env.NODE_ENV})`);
 });
