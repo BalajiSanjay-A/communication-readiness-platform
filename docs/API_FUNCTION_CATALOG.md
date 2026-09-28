@@ -1,5 +1,5 @@
 # API Function Catalog
-> **Source of truth:** actual backend source files as of 2026-09-26  
+> **Source of truth:** actual backend source files as of 2026-09-27  
 > **Branch:** `feature/module-2-live-integration`  
 > **Compiler status:** `tsc --noEmit` → 0 errors  
 > **DO NOT** treat `API_REFERENCE.md` as ground truth — this document is audited from code.
@@ -457,8 +457,9 @@ M1 routes are in `backend/src/routes/auth.routes.ts`, `student.routes.ts`, `org.
 | **Auth** | Required |
 | **Roles** | STUDENT (own), FACULTY_MENTOR, PROGRAM_ADMIN, PLACEMENT_COORDINATOR |
 | **Status** | `IMPLEMENTED_AND_USED` |
-| **Response** | `{ data: { studentId, balance, accountId, updatedAt } }` |
-| **DB** | `credit.credit_accounts` |
+| **Response** | `{ data: { studentId, balance, accountId, updatedAt, totalEarned, totalConsumed } }` |
+| **DB** | `credit.credit_accounts` + aggregate from `credit.credit_transactions` (FILTER by EARN/INITIAL/CONSUME) |
+| **Note** | `totalEarned` = sum of EARN+INITIAL transactions; `totalConsumed` = sum of CONSUME transactions; computed live from ledger |
 
 ### GET `/api/credits/transactions/:studentId`
 | Field | Value |
@@ -569,8 +570,8 @@ M1 routes are in `backend/src/routes/auth.routes.ts`, `student.routes.ts`, `org.
 | **Roles** | STUDENT (own) |
 | **Status** | `IMPLEMENTED_AND_USED` |
 | **Request** | `{ status?: "PENDING"|"IN_PROGRESS"|"COMPLETED", completionEvidence?, score? }` |
-| **Effect** | UPSERTs `placement.checklist_progress`; emits `CHECKLIST_ITEM_TOGGLED` |
-| **Note** | Does NOT auto-create mentor_verifications row — mentors manually request verification via `/api/verifications/pending` flow |
+| **Effect** | UPSERTs `placement.checklist_progress`; emits `CHECKLIST_ITEM_TOGGLED`; calls `EligibilityService.recalculate()` (fire-and-forget) |
+| **Note** | Does NOT auto-create mentor_verifications row — `requires_mentor_verification` column does not exist in current `checklist_items` schema. Students use `POST /api/verifications/request` to request mentor sign-off. |
 
 ### GET `/api/checklist/mentee/:studentId`
 | Field | Value |
@@ -593,17 +594,31 @@ M1 routes are in `backend/src/routes/auth.routes.ts`, `student.routes.ts`, `org.
 | **Response** | Pending verifications for this mentor's assigned students, joined with checklist item and student info |
 | **DB** | `placement.mentor_verifications` JOIN `checklist_progress`, `checklist_items`, `org.students`, `identity.users` |
 
+### POST `/api/verifications/request`
+| Field | Value |
+|-------|-------|
+| **File** | `src/modules/verifications/verifications.routes.ts:51` |
+| **Auth** | Required |
+| **Roles** | STUDENT |
+| **Status** | `IMPLEMENTED_AND_USED` |
+| **Request** | `{ checklistItemId: uuid }` |
+| **Response 201** | `{ data: { verificationId, status: "PENDING", checklistItemId, message } }` |
+| **Response 422** | `NO_MENTOR_ASSIGNED` — if student has no active mentor in `org.student_mentor_assignments` |
+| **Idempotency** | Re-uses existing PENDING verification if one already exists for same progress+mentor |
+| **Effect** | Upserts `placement.checklist_progress` (sets to IN_PROGRESS); creates `mentor_verifications` row with status=PENDING |
+| **Scope** | Mentor is resolved automatically from `org.student_mentor_assignments` — student does not specify mentor |
+
 ### POST `/api/verifications/:progressId/verify`
 | Field | Value |
 |-------|-------|
-| **File** | `src/modules/verifications/verifications.routes.ts:52` |
+| **File** | `src/modules/verifications/verifications.routes.ts` |
 | **Auth** | Required |
 | **Roles** | FACULTY_MENTOR |
 | **Status** | `IMPLEMENTED_AND_USED` |
 | **Request** | `{ status: "VERIFIED"|"REJECTED", notes? }` |
 | **Scope guard** | Checks `org.student_mentor_assignments` — rejects with 403 if mentor not assigned to student |
 | **Effect** | Upserts `mentor_verifications` row; if VERIFIED sets `checklist_progress.is_mentor_verified = true`; emits `MENTOR_VERIFIED` event; triggers `EligibilityService.recalculate()` |
-| **Event emitted** | `MENTOR_VERIFIED` |
+| **Event emitted** | `MENTOR_VERIFIED` with payload `{ studentId, mentorId, verifiedAt, checklistItemId, outcome }` |
 
 ---
 
@@ -611,7 +626,7 @@ M1 routes are in `backend/src/routes/auth.routes.ts`, `student.routes.ts`, `org.
 | Field | Value |
 |-------|-------|
 | **File** | `src/modules/placement/eligibility.service.ts:6` |
-| **Called by** | M4 `ATTEMPT_COMPLETED` handler, `verifications.routes.ts` on verify action |
+| **Called by** | M4 `ATTEMPT_COMPLETED` handler, `verifications.routes.ts` on verify action, `checklist.routes.ts` toggle (fire-and-forget) |
 | **Status** | `IMPLEMENTED_AND_USED` |
 | **Logic** | Counts required items vs mentor-verified items; reads `performance.performance_profiles.overall_score` (M3); reads `credit.credit_accounts.balance`; UPSERTs `placement.placement_eligibility` |
 | **Eligibility rules** | All required items mentor-verified AND performance score ≥ 60 AND credit balance > 0 |
@@ -733,13 +748,20 @@ payload: { studentId: string, itemId: string, isCompleted: boolean, toggledBy: s
 
 ### `MENTOR_VERIFIED`
 ```typescript
-payload: { studentId: string, mentorId: string, verifiedAt: string }
+payload: {
+  studentId: string,
+  mentorId: string,
+  verifiedAt: string,
+  checklistItemId: string | null,
+  outcome: 'VERIFIED' | 'REJECTED'
+}
 ```
 | | |
 |---|---|
 | **Emitter** | `POST /api/verifications/:progressId/verify` |
 | **Listeners** | None registered via eventBus (eligibility recalculated inline in route instead) |
 | **Status** | `IMPLEMENTED_BUT_NOT_CURRENTLY_USED` (emitted; eligibility handled synchronously in route) |
+| **Note** | `checklistItemId` and `outcome` added 2026-09-27 — payload now carries full context for downstream consumers |
 
 ---
 
@@ -851,4 +873,4 @@ M3 → evaluation.response_evaluations (read) → M2 writes → AVAILABLE_NOT_CO
 
 ---
 
-*Last updated: 2026-09-26 — audited from source, not from documentation*
+*Last updated: 2026-09-27 — M4 gap fixes: POST /verifications/request, balance totalEarned/totalConsumed, toggle recalculate, MENTOR_VERIFIED payload enriched*

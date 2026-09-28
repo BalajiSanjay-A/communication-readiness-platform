@@ -34,11 +34,22 @@ creditsRouter.get(
       );
       if (rows.length === 0) throw new AppError(404, 'Credit account not found', 'NOT_FOUND');
 
+      const { rows: totals } = await db.query(
+        `SELECT
+           COALESCE(SUM(amount) FILTER (WHERE transaction_type IN ('EARN', 'INITIAL')), 0) AS total_earned,
+           COALESCE(ABS(SUM(amount)) FILTER (WHERE transaction_type = 'CONSUME'), 0)       AS total_consumed
+         FROM credit.credit_transactions
+         WHERE student_id = $1`,
+        [studentId]
+      );
+
       sendSuccess(res, {
         studentId,
         balance: Number(rows[0].balance),
         accountId: rows[0].id,
         updatedAt: rows[0].updated_at,
+        totalEarned: Number(totals[0].total_earned),
+        totalConsumed: Number(totals[0].total_consumed),
       });
     } catch (err) {
       sendError(res, err);

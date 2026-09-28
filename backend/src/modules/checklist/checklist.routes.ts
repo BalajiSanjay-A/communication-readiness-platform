@@ -7,6 +7,7 @@ import { authenticate, AuthRequest } from '../../middleware/authenticate';
 import { requireRole } from '../../middleware/authorize';
 import { eventBus } from '../../shared/events/eventBus';
 import { Events } from '../../shared/events/events';
+import { EligibilityService } from '../placement/eligibility.service';
 
 export const checklistRouter = Router();
 
@@ -255,7 +256,12 @@ checklistRouter.post(
         toggledBy: studentId,
       });
 
-      sendSuccess(res, { progress: rows[0] });
+      // Recalculate placement eligibility after any status change (fire-and-forget)
+      EligibilityService.recalculate(studentId).catch(err => {
+        console.error('[M4] checklist toggle eligibility recalculate error:', (err as Error).message);
+      });
+
+      sendSuccess(res, { progress: rows[0], itemId, status });
     } catch (err) {
       sendError(res, err);
     }

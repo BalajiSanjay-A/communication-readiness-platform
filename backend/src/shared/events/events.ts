@@ -36,4 +36,6 @@ export interface MentorVerifiedPayload {
   studentId: string;
   mentorId: string;
   verifiedAt: string;
+  checklistItemId: string | null;
+  outcome: 'VERIFIED' | 'REJECTED';
 }

@@ -43,6 +43,91 @@ verificationsRouter.get(
   }
 );
 
+const requestSchema = z.object({
+  checklistItemId: z.string().uuid(),
+});
+
+// POST /api/verifications/request — student requests mentor verification for a checklist item
+verificationsRouter.post(
+  '/request',
+  authenticate,
+  requireRole('STUDENT'),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const userId = req.user!.id;
+
+      const parsed = requestSchema.safeParse(req.body);
+      if (!parsed.success) throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
+      const { checklistItemId } = parsed.data;
+
+      // Resolve studentId from JWT
+      const { rows: students } = await db.query(
+        'SELECT id FROM org.students WHERE user_id = $1',
+        [userId]
+      );
+      if (students.length === 0) throw new AppError(404, 'Student not found', 'NOT_FOUND');
+      const studentId = students[0].id as string;
+
+      // Verify checklist item exists
+      const { rows: items } = await db.query(
+        'SELECT id FROM placement.checklist_items WHERE id = $1 AND is_active = TRUE',
+        [checklistItemId]
+      );
+      if (items.length === 0) throw new AppError(404, 'Checklist item not found', 'NOT_FOUND');
+
+      // Look up assigned mentor
+      const { rows: assignments } = await db.query(
+        'SELECT mentor_id FROM org.student_mentor_assignments WHERE student_id = $1 AND is_active = TRUE LIMIT 1',
+        [studentId]
+      );
+      if (assignments.length === 0) throw new AppError(422, 'No mentor assigned to this student', 'NO_MENTOR_ASSIGNED');
+      const mentorUserId = assignments[0].mentor_id as string;
+
+      // Upsert checklist_progress — move to IN_PROGRESS if still PENDING
+      const { rows: progressRows } = await db.query(
+        `INSERT INTO placement.checklist_progress (student_id, checklist_item_id, status)
+         VALUES ($1, $2, 'IN_PROGRESS')
+         ON CONFLICT (student_id, checklist_item_id) DO UPDATE
+           SET updated_at = now()
+         RETURNING id, status`,
+        [studentId, checklistItemId]
+      );
+      const progressId = progressRows[0].id as string;
+
+      // Check for existing PENDING verification to stay idempotent
+      const { rows: existing } = await db.query(
+        `SELECT id FROM placement.mentor_verifications
+         WHERE checklist_progress_id = $1 AND mentor_user_id = $2 AND status = 'PENDING'`,
+        [progressId, mentorUserId]
+      );
+
+      let verificationId: string;
+      if (existing.length > 0) {
+        verificationId = existing[0].id as string;
+      } else {
+        const { rows: inserted } = await db.query(
+          `INSERT INTO placement.mentor_verifications
+             (student_id, mentor_user_id, verification_type, checklist_progress_id, status)
+           VALUES ($1, $2, 'CHECKLIST', $3, 'PENDING')
+           RETURNING id`,
+          [studentId, mentorUserId, progressId]
+        );
+        verificationId = inserted[0].id as string;
+      }
+
+      res.status(201);
+      sendSuccess(res, {
+        verificationId,
+        status: 'PENDING',
+        checklistItemId,
+        message: 'Mentor verification requested',
+      });
+    } catch (err) {
+      sendError(res, err);
+    }
+  }
+);
+
 const verifySchema = z.object({
   status: z.enum(['VERIFIED', 'REJECTED']),
   notes:  z.string().max(1000).optional(),
@@ -124,11 +209,20 @@ verificationsRouter.post(
         );
       }
 
+      // Fetch checklist_item_id for enriched event payload
+      const { rows: progressInfo } = await db.query(
+        'SELECT checklist_item_id FROM placement.checklist_progress WHERE id = $1',
+        [progressId]
+      );
+      const checklistItemId = (progressInfo[0]?.checklist_item_id as string) ?? null;
+
       // Fire MENTOR_VERIFIED event (triggers eligibility recalculation)
       eventBus.emit(Events.MENTOR_VERIFIED, {
         studentId,
         mentorId: userId,
         verifiedAt: new Date().toISOString(),
+        checklistItemId,
+        outcome: status as 'VERIFIED' | 'REJECTED',
       });
 
       // Recalculate eligibility immediately on verify action
