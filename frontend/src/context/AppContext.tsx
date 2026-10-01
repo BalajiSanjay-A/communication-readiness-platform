@@ -207,15 +207,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const startInterview = async (type: 'MOCK_INTERVIEW' | 'LISTENING_COMPREHENSION' = 'MOCK_INTERVIEW') => {
     setActiveView(type === 'MOCK_INTERVIEW' ? 'INTERVIEW_ROOM' : 'LISTENING_ROOM');
 
+    if (type !== 'MOCK_INTERVIEW') {
+      // Listening comprehension path unchanged
+      setInterviewState({
+        isActive: true,
+        sessionId: `ses_${Date.now()}`,
+        type,
+        turnIndex: 0,
+        currentDifficulty: 'EASY',
+        questions: MOCK_INTERVIEW_QUESTIONS,
+        tabSwitches: 0,
+        isFlagged: false,
+        orbState: 'SPEAKING',
+        liveTranscript: ''
+      });
+      return;
+    }
+
+    const backendResume = {
+      name: student.name || '',
+      experience_level: 'fresher',
+      skills: {
+        languages: student.resume?.skills.languages ?? [],
+        frameworks: student.resume?.skills.frameworks ?? [],
+        databases: student.resume?.skills.databases ?? [],
+        tools: student.resume?.skills.tools ?? [],
+      },
+      projects: (student.resume?.projects ?? []).map(p => ({
+        title: p.title,
+        tech_stack: p.techStack ?? [],
+        description: p.description ?? '',
+      })),
+      summary: student.resume?.summary ?? '',
+    };
+
     try {
-      const data = await api.interview.start(student.id || 'stu-21cs1084', type);
+      const data = await api.sessions.start(backendResume, { maxTurns: 10 });
+      const firstQ: QuestionTurn = {
+        id: `q_1_${Date.now()}`,
+        questionNumber: 1,
+        questionText: data.firstQuestion,
+        difficulty: 'EASY',
+        category: 'Introduction',
+      };
       setInterviewState({
         isActive: true,
         sessionId: data.sessionId,
         type,
         turnIndex: 0,
-        currentDifficulty: data.firstQuestion.difficulty,
-        questions: [data.firstQuestion],
+        currentDifficulty: 'EASY',
+        questions: [firstQ],
         tabSwitches: 0,
         isFlagged: false,
         orbState: 'SPEAKING',
@@ -322,14 +363,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sessId = interviewState.sessionId || `ses_${Date.now()}`;
     try {
       const data = await api.sessions.submitTurn(sessId, audioBlob, {
-        studentId: student.id || 'stu-21cs1084',
+        studentId: currentUser?.id || student.id || '',
         questionText,
         difficulty,
         turnNumber,
         domain: student.department || 'CSE',
       });
 
-      const isCompleted = turnNumber >= 3;
+      const isCompleted = turnNumber >= (interviewState.questions.length);
       if (isCompleted) {
         const report: DiagnosticReport = {
           id: `rep_${Date.now().toString().slice(-4)}`,
@@ -355,12 +396,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setInterviewState(prev => ({ ...prev, isActive: false, orbState: 'IDLE' }));
         setActiveView('REPORT_VIEW');
       } else {
-        const nextQ = {
+        const nextQ: QuestionTurn = {
           id: `q_${turnNumber + 1}_${Date.now()}`,
           questionNumber: turnNumber + 1,
-          questionText: 'Please elaborate on the scalability aspects of your previous answer.',
-          difficulty: (data.nextDifficulty || 'MEDIUM') as Difficulty,
-          category: 'Architecture',
+          questionText: data.nextQuestionText || 'Thank you for your answer. What challenges have you faced?',
+          difficulty: (data.nextDifficulty || 'EASY') as Difficulty,
+          category: 'Technical',
+          conversationalResponse: data.conversationalResponse || undefined,
         };
         setInterviewState(prev => {
           const updated = [...prev.questions];

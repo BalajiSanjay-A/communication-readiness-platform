@@ -331,8 +331,11 @@ export const MockInterviewRoom: React.FC = () => {
     isSpeakingRef.current = true;
     setIsSpeakingQuestion(true);
 
+    // Speak the full conversational response (includes transition + question) if available,
+    // otherwise fall back to the clean question text
+    const textToSpeak = currentQ?.conversationalResponse || questionText;
     // useQuestionTTS handles voice selection, Chromium onend workaround, and cleanup
-    ttsSpeakFn(questionText, () => {
+    ttsSpeakFn(textToSpeak, () => {
       isSpeakingRef.current = false;
       setIsSpeakingQuestion(false);
 
