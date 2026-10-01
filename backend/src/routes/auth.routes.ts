@@ -49,15 +49,16 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
 
   const client = await db.connect();
   try {
-    const { rows: batchRows } = await client.query('SELECT id FROM org.batches WHERE id = $1', [batchId]);
-    if (batchRows.length === 0) {
-      throw new AppError(404, 'Batch not found', 'NOT_FOUND');
-    }
-
     const passwordHash = await bcrypt.hash(password, 10);
 
     await client.query('BEGIN');
     try {
+      // Batch validation inside transaction — prevents TOCTOU race
+      const { rows: batchRows } = await client.query('SELECT id FROM org.batches WHERE id = $1', [batchId]);
+      if (batchRows.length === 0) {
+        throw new AppError(404, 'Batch not found', 'NOT_FOUND');
+      }
+
       const { rows: userRows } = await client.query<{ id: string }>(
         `INSERT INTO identity.users (name, email, password_hash, role, token_version, status)
          VALUES ($1, $2, $3, 'STUDENT', 0, 'ACTIVE') RETURNING id`,

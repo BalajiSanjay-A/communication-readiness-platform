@@ -31,6 +31,9 @@ export interface InterviewState {
   current_question: string;
   current_question_turn: number;
   current_rubric: Record<string, unknown>;
+  // Rolling overall score — server-tracked, never from client
+  rolling_overall_score?: number;
+  rolling_score_turns?: number;
 }
 
 // ── Redis connection (lazy singleton) ─────────────────────────────────────────
@@ -60,6 +63,8 @@ async function getRedis(): Promise<NodeRedisClient> {
     _connectPromise = _redis.connect().catch((err: Error) => {
       console.error('[SessionContext] Redis connect failed:', err.message);
       _connectPromise = null;
+      _redis = null;
+      throw err;
     });
   }
 
@@ -190,6 +195,7 @@ export class SessionContextService {
       current_question_turn?: number;
       current_rubric?: Record<string, unknown>;
       performance_trend?: InterviewState['candidate_performance_trend'];
+      overall_score?: number;
     },
   ): Promise<InterviewState | null> {
     const state = await this.getState(sessionId);
@@ -225,6 +231,13 @@ export class SessionContextService {
     if (patch.current_question_turn !== undefined) state.current_question_turn = patch.current_question_turn;
     if (patch.current_rubric !== undefined) state.current_rubric = patch.current_rubric;
     if (patch.performance_trend) state.candidate_performance_trend = patch.performance_trend;
+    if (patch.overall_score !== undefined) {
+      const prevScore = state.rolling_overall_score ?? 0;
+      const prevCount = state.rolling_score_turns ?? 0;
+      const newCount = prevCount + 1;
+      state.rolling_overall_score = Math.round((prevScore * prevCount + patch.overall_score) / newCount);
+      state.rolling_score_turns = newCount;
+    }
 
     await this.setState(sessionId, state);
     return state;

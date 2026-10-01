@@ -5,6 +5,7 @@ import { AppError } from '../shared/errors/AppError';
 import { sendSuccess, sendError } from '../shared/helpers/response';
 import { AuthRequest } from '../middleware/authenticate';
 import { requireRole } from '../middleware/authorize';
+import { cache } from '../services/cacheService';
 
 export const adminRouter = Router();
 
@@ -14,12 +15,16 @@ const VALID_STATUSES = ['ACTIVE', 'INACTIVE', 'SUSPENDED'] as const;
 
 adminRouter.get(
   '/users',
-  requireRole('PROGRAM_ADMIN'),
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const roleFilter = (req.query.role as string) ?? null;
       const statusFilter = (req.query.status as string) ?? null;
       const searchFilter = (req.query.search as string) ?? null;
+
+      const key = `admin:users:${roleFilter}:${statusFilter}:${searchFilter}`;
+      const cached = await cache.get<{ users: unknown[] }>(key);
+      if (cached) { sendSuccess(res, cached); return; }
 
       const { rows } = await db.query(
         `SELECT id, name, email, role, status, created_at
@@ -31,7 +36,9 @@ adminRouter.get(
          LIMIT 100`,
         [roleFilter, statusFilter, searchFilter]
       );
-      sendSuccess(res, { users: rows });
+      const data = { users: rows };
+      await cache.set(key, data, 120);
+      sendSuccess(res, data);
     } catch (err) {
       sendError(res, err);
     }
@@ -46,7 +53,7 @@ const roleSchema = z.object({
 
 adminRouter.patch(
   '/users/:userId/role',
-  requireRole('PROGRAM_ADMIN'),
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { userId } = req.params;
@@ -69,6 +76,7 @@ adminRouter.patch(
       );
       if (rows.length === 0) throw new AppError(404, 'User not found', 'NOT_FOUND');
 
+      await cache.delPattern('admin:users:*');
       sendSuccess(res, { user: rows[0] });
     } catch (err) {
       sendError(res, err);
@@ -84,7 +92,7 @@ const statusSchema = z.object({
 
 adminRouter.patch(
   '/users/:userId/status',
-  requireRole('PROGRAM_ADMIN'),
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { userId } = req.params;
@@ -100,6 +108,7 @@ adminRouter.patch(
       );
       if (rows.length === 0) throw new AppError(404, 'User not found', 'NOT_FOUND');
 
+      await cache.delPattern('admin:users:*');
       sendSuccess(res, { user: rows[0] });
     } catch (err) {
       sendError(res, err);
