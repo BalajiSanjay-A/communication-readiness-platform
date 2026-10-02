@@ -34,6 +34,21 @@ interface InterviewSessionState {
   liveTranscript: string;
 }
 
+export interface WsTurnResultData {
+  transcript: string;
+  technicalScore: number;
+  communicationScore: number;
+  overallScore: number;
+  feedback: string;
+  strengths: string;
+  weaknesses: string;
+  nextDifficulty: string;
+  nextQuestionText: string;
+  contextSummary: string;
+  audioMetrics: { paceWpm: number; fillerCount: number; fluencyScore: number; clarityScore: number };
+  conversationalResponse: string;
+}
+
 interface AppContextType {
   isAuthenticated: boolean;
   currentUser: AuthUser | null;
@@ -68,6 +83,7 @@ interface AppContextType {
   verifyCriteriaTask: (taskId: string) => Promise<void>;
   uploadResumeData: (payload: FormData | { resumeText: string; fileName?: string } | ParsedResume) => Promise<ParsedResume>;
   updateCodingHandles: (handles: Partial<CodingHandles>) => Promise<void>;
+  applyWsTurnResult: (data: WsTurnResultData, turnNumber: number) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -433,6 +449,70 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const applyWsTurnResult = (data: WsTurnResultData, turnNumber: number) => {
+    const isCompleted = turnNumber >= (interviewState.questions.length);
+    if (isCompleted) {
+      const report: DiagnosticReport = {
+        id: `rep_${Date.now().toString().slice(-4)}`,
+        date: new Date().toISOString().split('T')[0],
+        sessionType: interviewState.type,
+        overallScore: data.overallScore,
+        technicalScore: data.technicalScore,
+        communicationScore: data.communicationScore,
+        averageWpm: data.audioMetrics?.paceWpm || 120,
+        totalFillerWords: data.audioMetrics?.fillerCount || 0,
+        fillerWordBreakdown: {},
+        skillBreakdown: [
+          { skill: 'Technical Knowledge', score: data.technicalScore, status: data.technicalScore >= 75 ? 'STRONG' : 'NEEDS_WORK', recommendation: data.feedback },
+          { skill: 'Communication Fluency', score: Math.round(data.audioMetrics?.fluencyScore ?? data.communicationScore), status: 'MODERATE', recommendation: data.strengths },
+          { skill: 'Speech Clarity', score: Math.round(data.audioMetrics?.clarityScore ?? data.communicationScore), status: 'MODERATE', recommendation: data.weaknesses },
+        ],
+        actionableNextSteps: [data.feedback, data.strengths, data.weaknesses].filter(Boolean),
+        tabSwitches: interviewState.tabSwitches,
+        isFlagged: interviewState.isFlagged,
+      };
+      setLatestReport(report);
+      setStudent(prev => ({ ...prev, recentReports: [report, ...prev.recentReports] }));
+      setInterviewState(prev => ({ ...prev, isActive: false, orbState: 'IDLE' }));
+      setActiveView('REPORT_VIEW');
+      return;
+    }
+
+    const nextQ: QuestionTurn = {
+      id: `q_${turnNumber + 1}_${Date.now()}`,
+      questionNumber: turnNumber + 1,
+      questionText: data.nextQuestionText || 'Thank you. Can you tell me more about your technical background?',
+      difficulty: (data.nextDifficulty || 'EASY') as Difficulty,
+      category: 'Technical',
+      conversationalResponse: data.conversationalResponse || undefined,
+    };
+
+    setInterviewState(prev => {
+      const updated = [...prev.questions];
+      if (updated[prev.turnIndex]) {
+        updated[prev.turnIndex] = {
+          ...updated[prev.turnIndex],
+          studentAnswer: data.transcript,
+          technicalScore: data.technicalScore,
+          communicationScore: data.communicationScore,
+          wpm: data.audioMetrics?.paceWpm || 120,
+          fillerWords: data.audioMetrics?.fillerCount || 0,
+          feedback: data.feedback,
+          strengths: data.strengths,
+          weaknesses: data.weaknesses,
+        };
+      }
+      return {
+        ...prev,
+        turnIndex: prev.turnIndex + 1,
+        currentDifficulty: (data.nextDifficulty || 'MEDIUM') as Difficulty,
+        questions: [...updated, nextQ],
+        orbState: 'SPEAKING',
+        liveTranscript: '',
+      };
+    });
+  };
+
   const endInterview = async () => {
     const report: DiagnosticReport = {
       id: `rep-${Date.now().toString().slice(-4)}`,
@@ -774,7 +854,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toggleCriteriaTask,
       verifyCriteriaTask,
       uploadResumeData,
-      updateCodingHandles
+      updateCodingHandles,
+      applyWsTurnResult,
     }}>
       {children}
     </AppContext.Provider>

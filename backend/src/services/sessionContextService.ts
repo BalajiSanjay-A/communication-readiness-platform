@@ -92,10 +92,14 @@ export class SessionContextService {
   // ── Turn context (short-term list) ────────────────────────────────────────
 
   async appendTurn(sessionId: string, turn: TurnContext): Promise<void> {
-    const redis = await getRedis();
-    const k = this.contextKey(sessionId);
-    await redis.rPush(k, JSON.stringify(turn));
-    await redis.expire(k, this.SESSION_TTL_SECONDS);
+    try {
+      const redis = await getRedis();
+      const k = this.contextKey(sessionId);
+      await redis.rPush(k, JSON.stringify(turn));
+      await redis.expire(k, this.SESSION_TTL_SECONDS);
+    } catch (err) {
+      console.error('[SessionContext] appendTurn failed (Redis unavailable):', (err as Error).message);
+    }
   }
 
   async getTurns(sessionId: string, lastN = 10): Promise<TurnContext[]> {
@@ -247,8 +251,15 @@ export class SessionContextService {
 
   async checkpointToDb(sessionId: string): Promise<void> {
     const lockKey = `session:${sessionId}:db_lock`;
-    const redis = await getRedis();
-    const acquired = await redis.set(lockKey, '1', { NX: true, EX: 10 });
+    let redis: NodeRedisClient;
+    try {
+      redis = await getRedis();
+    } catch {
+      console.error('[SessionContext] checkpointToDb: Redis unavailable, skipping checkpoint');
+      return;
+    }
+
+    const acquired = await redis.set(lockKey, '1', { NX: true, EX: 10 }).catch(() => null);
     if (!acquired) return; // another write in flight — next checkpoint catches up
 
     try {

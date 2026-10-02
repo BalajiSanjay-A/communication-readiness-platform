@@ -161,10 +161,9 @@ function normaliseScores(raw: RawEvaluation): {
   overallScore: number;
 } {
   const technicalScore = Math.round(raw.technical_score * 10);
-  const fillerPenalty = Math.max(0, 100 - raw.filler_count * 5); // guard against negative
-  const communicationScore = Math.round(
-    fillerPenalty * 0.4 + raw.fluency_score * 10 * 0.3 + raw.clarity_score * 10 * 0.3,
-  );
+  const fillerPenalty = Math.max(0, 100 - raw.filler_count * 5);
+  // clarity_score is already 0-100; no × 10. fluency_score omitted (still 0 on audio-less path).
+  const communicationScore = Math.round(fillerPenalty * 0.7 + raw.clarity_score * 0.3);
   const overallScore = Math.round(technicalScore * 0.7 + communicationScore * 0.3);
   return {
     technicalScore: Math.max(0, Math.min(100, technicalScore)),
@@ -311,9 +310,23 @@ interviewRouter.post(
       // ── Pull full session context from Redis (parallel) ───────────────────
       const [interviewState, shortTermSummaries, resume] = await Promise.all([
         sessionContextService.getState(meta.sessionId).catch(() => null),
-        sessionContextService.getSummaries(meta.sessionId, 10).catch(() => [] as string[]),
+        sessionContextService.getSummaries(meta.sessionId, 5).catch(() => [] as string[]),
         sessionContextService.getResume(meta.sessionId).catch(() => null),
       ]);
+
+      // Fix 3: ownership check before any processing
+      if (interviewState) {
+        if (interviewState.student_id !== req.user!.id) {
+          throw new AppError(403, 'Access denied', 'FORBIDDEN');
+        }
+      } else {
+        const { rows: sessionRows } = await db.query<{ student_id: string }>(
+          'SELECT student_id FROM session.interview_sessions WHERE id = $1',
+          [meta.sessionId],
+        );
+        if (sessionRows.length === 0) throw new AppError(404, 'Session not found', 'NOT_FOUND');
+        if (sessionRows[0].student_id !== req.user!.id) throw new AppError(403, 'Access denied', 'FORBIDDEN');
+      }
 
       const currentRubric = interviewState?.current_rubric ?? null;
 
