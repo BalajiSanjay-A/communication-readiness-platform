@@ -175,6 +175,47 @@ authRouter.post('/logout', authenticate, async (req: AuthRequest, res: Response)
   }
 });
 
+// ── POST /api/auth/change-password ───────────────────────────────────────────
+
+const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8).max(128),
+});
+
+authRouter.post('/change-password', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const parsed = ChangePasswordSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, 'Invalid request body', 'VALIDATION_ERROR');
+
+    const { currentPassword, newPassword } = parsed.data;
+
+    const { rows } = await db.query<{ password_hash: string }>(
+      'SELECT password_hash FROM identity.users WHERE id = $1',
+      [req.user!.id],
+    );
+    if (rows.length === 0) throw new AppError(404, 'User not found', 'NOT_FOUND');
+
+    const valid = await bcrypt.compare(currentPassword, rows[0].password_hash);
+    if (!valid) throw new AppError(401, 'Current password is incorrect', 'INVALID_PASSWORD');
+
+    if (currentPassword === newPassword) {
+      throw new AppError(400, 'New password must differ from current password', 'SAME_PASSWORD');
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await db.query(
+      `UPDATE identity.users
+       SET password_hash = $1, token_version = token_version + 1, updated_at = now()
+       WHERE id = $2`,
+      [newHash, req.user!.id],
+    );
+
+    sendSuccess(res, { message: 'Password changed successfully' });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // ── GET /api/auth/me ───────────────────────────────────────────────────────────
 
 authRouter.get('/me', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
