@@ -34,7 +34,6 @@ const registerSchema = z.object({
   name: z.string().min(2).max(255),
   email: z.string().email().transform(s => s.toLowerCase()),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  rollNumber: z.string().min(1),
   batchId: z.string().uuid(),
   subdivisionId: z.string().uuid().optional(),
 });
@@ -45,20 +44,21 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     sendError(res, new AppError(422, 'Validation failed', 'VALIDATION_ERROR'));
     return;
   }
-  const { name, email, password, rollNumber, batchId, subdivisionId } = parsed.data;
+  const { name, email, password, batchId, subdivisionId } = parsed.data;
 
   const client = await db.connect();
   try {
+    const { rows: batchRows } = await client.query<{ id: string; program_id: string }>(
+      'SELECT id, program_id FROM org.batches WHERE id = $1', [batchId]
+    );
+    if (batchRows.length === 0) {
+      throw new AppError(404, 'Batch not found', 'NOT_FOUND');
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
 
     await client.query('BEGIN');
     try {
-      // Batch validation inside transaction — prevents TOCTOU race
-      const { rows: batchRows } = await client.query('SELECT id FROM org.batches WHERE id = $1', [batchId]);
-      if (batchRows.length === 0) {
-        throw new AppError(404, 'Batch not found', 'NOT_FOUND');
-      }
-
       const { rows: userRows } = await client.query<{ id: string }>(
         `INSERT INTO identity.users (name, email, password_hash, role, token_version, status)
          VALUES ($1, $2, $3, 'STUDENT', 0, 'ACTIVE') RETURNING id`,
@@ -67,9 +67,9 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       const userId = userRows[0].id;
 
       const { rows: studentRows } = await client.query<{ id: string }>(
-        `INSERT INTO org.students (user_id, roll_number, batch_id, subdivision_id, coding_handles)
-         VALUES ($1, $2, $3, $4, '{}') RETURNING id`,
-        [userId, rollNumber, batchId, subdivisionId ?? null]
+        `INSERT INTO org.students (user_id, program_id, batch_id, subdivision_id)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [userId, batchRows[0].program_id, batchId, subdivisionId ?? null]
       );
       const studentId = studentRows[0].id;
 
@@ -89,7 +89,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
   } catch (err) {
     if (err instanceof AppError) { sendError(res, err); return; }
     if ((err as { code?: string }).code === '23505') {
-      sendError(res, new AppError(409, 'Email or roll number already registered', 'DUPLICATE_EMAIL'));
+      sendError(res, new AppError(409, 'Email already registered', 'DUPLICATE_EMAIL'));
       return;
     }
     sendError(res, err);
@@ -170,47 +170,6 @@ authRouter.post('/logout', authenticate, async (req: AuthRequest, res: Response)
       [req.user!.id]
     );
     sendSuccess(res, { message: 'Logged out successfully' });
-  } catch (err) {
-    sendError(res, err);
-  }
-});
-
-// ── POST /api/auth/change-password ───────────────────────────────────────────
-
-const ChangePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8).max(128),
-});
-
-authRouter.post('/change-password', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const parsed = ChangePasswordSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(422, 'Invalid request body', 'VALIDATION_ERROR');
-
-    const { currentPassword, newPassword } = parsed.data;
-
-    const { rows } = await db.query<{ password_hash: string }>(
-      'SELECT password_hash FROM identity.users WHERE id = $1',
-      [req.user!.id],
-    );
-    if (rows.length === 0) throw new AppError(404, 'User not found', 'NOT_FOUND');
-
-    const valid = await bcrypt.compare(currentPassword, rows[0].password_hash);
-    if (!valid) throw new AppError(401, 'Current password is incorrect', 'INVALID_PASSWORD');
-
-    if (currentPassword === newPassword) {
-      throw new AppError(400, 'New password must differ from current password', 'SAME_PASSWORD');
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 12);
-    await db.query(
-      `UPDATE identity.users
-       SET password_hash = $1, token_version = token_version + 1, updated_at = now()
-       WHERE id = $2`,
-      [newHash, req.user!.id],
-    );
-
-    sendSuccess(res, { message: 'Password changed successfully' });
   } catch (err) {
     sendError(res, err);
   }

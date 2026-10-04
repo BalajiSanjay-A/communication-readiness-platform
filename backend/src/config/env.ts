@@ -12,22 +12,8 @@ const schema = z.object({
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/comm_readiness'),
   UPLOAD_MAX_FILE_SIZE_MB: z.coerce.number().default(5),
   UPLOAD_DIR: z.string().default('uploads'),
-  MAX_TAB_SWITCH_LIMIT: z.coerce.number().int().min(1).default(4),
-  MAX_REPLAY_COUNT: z.coerce.number().int().min(1).default(2),
-  MAX_QUESTIONS_PER_SESSION: z.coerce.number().int().min(1).default(5),
-  // Redis for session context cache (TTL: 2 hours per session)
-  REDIS_URL: z.string().default('redis://localhost:6379'),
-  // Deepgram streaming STT (Phase 1 — replaces Groq Whisper batch)
-  DEEPGRAM_API_KEY: z.string().default(''),
-  // Resend — transactional email for staff account creation
-  RESEND_API_KEY: z.string().default(''),
-  RESEND_FROM_EMAIL: z.string().default('noreply@aiinterview.dev'),
-  APP_NAME: z.string().default('AI Interview Platform'),
-  APP_URL: z.string().default('http://localhost:5173'),
+  // Shared secret for internal calls to the Python AI service
+  AI_INTERNAL_KEY: z.string().default('change-me'),
 });
 
 export const env = schema.parse(process.env);
-
-if (env.NODE_ENV === 'production' && env.JWT_SECRET === 'dev-secret-change-in-production-min-32-chars') {
-  throw new Error('JWT_SECRET must be set to a strong random secret in production');
-}

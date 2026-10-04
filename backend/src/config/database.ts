@@ -6,7 +6,6 @@ export const db = new Pool({
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 2_000,
-  ssl: env.NODE_ENV !== 'development' ? { rejectUnauthorized: false } : undefined,
 });
 
 db.on('connect', () => {
